@@ -461,10 +461,16 @@ class _ConsultationScreenState extends State<ConsultationScreen> {
 
         if (type == 'audio' && shouldUseInlineFallback) {
           inlineAudioBase64 = await _encodeInlineAudio(selectedMedia!);
+          if (inlineAudioBase64.isEmpty) {
+            throw Exception('inline_audio_encoding_failed');
+          }
           type = 'audio_inline';
           downloadUrl = null;
         } else if (type != 'audio' && shouldUseInlineFallback) {
           inlineFileBase64 = await _encodeInlineFile(selectedMedia!);
+          if (inlineFileBase64.isEmpty) {
+            throw Exception('inline_file_encoding_failed');
+          }
           type = '${type}_inline';
           downloadUrl = null;
         }
@@ -1524,6 +1530,9 @@ class _ConsultationScreenState extends State<ConsultationScreen> {
     Widget content;
     final inlineAudioBase64 = msg['audioBase64'] as String?;
     final inlineFileBase64 = msg['fileBase64'] as String?;
+    final hasRemoteFile = fileUrl != null && fileUrl.isNotEmpty;
+    final hasInlineAudio = inlineAudioBase64 != null && inlineAudioBase64.isNotEmpty;
+    final hasInlineFile = inlineFileBase64 != null && inlineFileBase64.isNotEmpty;
 
     if ((type == 'image' ||
             type == 'video' ||
@@ -1533,7 +1542,7 @@ class _ConsultationScreenState extends State<ConsultationScreen> {
             type == 'image_inline' ||
             type == 'video_inline' ||
             type == 'file_inline') &&
-        (fileUrl != null || inlineAudioBase64 != null || inlineFileBase64 != null)) {
+        (hasRemoteFile || hasInlineAudio || hasInlineFile)) {
       List<Widget> contentWidgets = [];
 
       if (text.isNotEmpty) {
@@ -1547,11 +1556,11 @@ class _ConsultationScreenState extends State<ConsultationScreen> {
             borderRadius: BorderRadius.circular(12),
             child: InkWell(
               onTap: () {
-                if (fileUrl != null && fileUrl.isNotEmpty) {
+                if (hasRemoteFile) {
                   _showFullScreenImage(fileUrl, context);
                 }
               },
-              child: (fileUrl != null && fileUrl.isNotEmpty)
+              child: hasRemoteFile
                   ? Image.network(
                       fileUrl,
                       width: 250,
@@ -1580,20 +1589,35 @@ class _ConsultationScreenState extends State<ConsultationScreen> {
                         child: const Icon(Icons.broken_image, size: 50),
                       ),
                     )
-                  : Image.memory(
-                      base64Decode(inlineFileBase64!),
-                      width: 250,
-                      height: 200,
-                      fit: BoxFit.cover,
-                    ),
+                  : hasInlineFile
+                      ? Image.memory(
+                          base64Decode(inlineFileBase64!),
+                          width: 250,
+                          height: 200,
+                          fit: BoxFit.cover,
+                          errorBuilder: (_, __, ___) => Container(
+                            width: 250,
+                            height: 200,
+                            color: Colors.grey[200],
+                            alignment: Alignment.center,
+                            child: const Text('تعذر عرض الصورة'),
+                          ),
+                        )
+                      : Container(
+                          width: 250,
+                          height: 200,
+                          color: Colors.grey[200],
+                          alignment: Alignment.center,
+                          child: const Text('صورة غير متاحة'),
+                        ),
             ),
           ),
         );
       } else if (type == 'video' || type == 'video_inline') {
         contentWidgets.add(
           InkWell(
-            onTap: () {
-              if (fileUrl != null && fileUrl.isNotEmpty) {
+              onTap: () {
+              if (hasRemoteFile) {
                 _showVideoDialog(fileUrl, context);
               }
             },
@@ -1611,7 +1635,7 @@ class _ConsultationScreenState extends State<ConsultationScreen> {
                       size: 50,
                       color: theme.primaryColor),
                   const SizedBox(height: 8),
-                  Text(fileUrl != null ? 'فيديو مرفق' : 'فيديو مرفق (محلي فقط)',
+                  Text(hasRemoteFile ? 'فيديو مرفق' : 'فيديو مرفق (محلي فقط)',
                       style: theme.textTheme.bodyMedium?.copyWith(
                         color: theme.primaryColor,
                       )),
@@ -1679,8 +1703,8 @@ class _ConsultationScreenState extends State<ConsultationScreen> {
                     IconButton(
                       onPressed: () => _playOrPauseAudio(
                         messageId: msgId,
-                        audioUrl: fileUrl,
-                        inlineAudioBase64: inlineAudioBase64,
+                        audioUrl: hasRemoteFile ? fileUrl : null,
+                        inlineAudioBase64: hasInlineAudio ? inlineAudioBase64 : null,
                       ),
                       icon: Icon(
                         _playingMessageId == msgId
@@ -1727,7 +1751,10 @@ class _ConsultationScreenState extends State<ConsultationScreen> {
         children: contentWidgets,
       );
     } else {
-      content = Text(text, style: theme.textTheme.bodyMedium);
+      content = Text(
+        text.isNotEmpty ? text : 'مرفق غير متاح',
+        style: theme.textTheme.bodyMedium,
+      );
     }
 
     return VisibilityDetector(
