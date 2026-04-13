@@ -560,7 +560,7 @@ class _ConsultationScreenState extends State<ConsultationScreen> {
     }
   }
 
-  Future<void> _stopAndSendRecording() async {
+  Future<void> _stopAndAttachRecording() async {
     try {
       final path = await _audioRecorder.stop();
       if (!mounted) return;
@@ -576,17 +576,17 @@ class _ConsultationScreenState extends State<ConsultationScreen> {
         mediaType = 'audio';
         fileName = 'voice_${DateTime.now().millisecondsSinceEpoch}.m4a';
       });
-      await _sendMessage();
+      _showSuccessSnackbar('تم إرفاق التسجيل الصوتي، يمكنك كتابة رسالة ثم الإرسال');
     } catch (e) {
       _logError('تعذر إرسال التسجيل الصوتي: $e');
       if (mounted) setState(() => _isRecording = false);
-      _showErrorSnackbar('تعذر إرسال التسجيل الصوتي');
+      _showErrorSnackbar('تعذر إرفاق التسجيل الصوتي');
     }
   }
 
   Future<void> _toggleVoiceRecording() async {
     if (_isRecording) {
-      await _stopAndSendRecording();
+      await _stopAndAttachRecording();
       return;
     }
     await _startRecording();
@@ -1486,7 +1486,7 @@ class _ConsultationScreenState extends State<ConsultationScreen> {
                           ),
                           child: IconButton(
                             onPressed: _toggleVoiceRecording,
-                            tooltip: _isRecording ? 'إيقاف وإرسال التسجيل' : 'تسجيل صوتي',
+                            tooltip: _isRecording ? 'إيقاف وإرفاق التسجيل' : 'تسجيل صوتي',
                             icon: Icon(
                               _isRecording ? Icons.stop_circle_rounded : Icons.mic_rounded,
                               color: _isRecording ? theme.colorScheme.error : Colors.blue,
