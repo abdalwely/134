@@ -86,6 +86,7 @@ class _ConsultationScreenState extends State<ConsultationScreen> {
   Duration _audioDuration = Duration.zero;
   Duration _audioPosition = Duration.zero;
   final Map<String, String> _inlineAudioFiles = {};
+  bool _cloudStorageBlocked = false;
 
   @override
   void initState() {
@@ -448,9 +449,10 @@ class _ConsultationScreenState extends State<ConsultationScreen> {
     try {
       if (selectedMedia != null && mediaType != null) {
         type = mediaType!;
-        downloadUrl = await _uploadFile();
+        downloadUrl = _cloudStorageBlocked ? null : await _uploadFile();
 
-        final shouldUseInlineFallback = downloadUrl == null ||
+        final shouldUseInlineFallback = _cloudStorageBlocked ||
+            downloadUrl == null ||
             (_lastUploadError != null &&
                 _isStoragePlanRestricted(_lastUploadError!));
 
@@ -707,14 +709,20 @@ class _ConsultationScreenState extends State<ConsultationScreen> {
         SettableMetadata(contentType: contentType),
       );
 
-      uploadTask.snapshotEvents.listen((snapshot) {
-        if (!mounted) return;
-        final total = snapshot.totalBytes;
-        if (total <= 0) return;
-        setState(() {
-          _uploadProgress = snapshot.bytesTransferred / total;
-        });
-      });
+      uploadTask.snapshotEvents.listen(
+        (snapshot) {
+          if (!mounted) return;
+          final total = snapshot.totalBytes;
+          if (total <= 0) return;
+          setState(() {
+            _uploadProgress = snapshot.bytesTransferred / total;
+          });
+        },
+        onError: (Object error) {
+          _lastUploadError = error;
+          _logError('خطأ أثناء متابعة تقدم الرفع: $error');
+        },
+      );
 
       await uploadTask;
       final downloadUrl = await ref.getDownloadURL();
@@ -729,6 +737,9 @@ class _ConsultationScreenState extends State<ConsultationScreen> {
       return downloadUrl;
     } catch (e) {
       _lastUploadError = e;
+      if (_isStoragePlanRestricted(e)) {
+        _cloudStorageBlocked = true;
+      }
       _logError('فشل رفع الملف: $e');
       if (mounted) {
         setState(() {
@@ -1852,15 +1863,11 @@ class _ConsultationScreenState extends State<ConsultationScreen> {
                 children: [
                   // ========== صورة المستخدم (اليسار للرسائل الواردة) ==========
                   if (!isMe) ...[
-                    CircleAvatar(
+                    _buildUserAvatar(
+                      imageUrl: senderImage,
                       radius: 16,
                       backgroundColor: theme.primaryColor.withOpacity(0.3),
-                      backgroundImage: senderImage.isNotEmpty
-                          ? NetworkImage(senderImage)
-                          : null,
-                      child: senderImage.isEmpty
-                          ? Icon(Icons.person, size: 16, color: theme.primaryColor)
-                          : null,
+                      fallbackIconColor: theme.primaryColor,
                     ),
                     const SizedBox(width: 8),
                   ],
@@ -1945,15 +1952,11 @@ class _ConsultationScreenState extends State<ConsultationScreen> {
                   // ========== صورة المستخدم (اليمين للرسائل المرسلة) ==========
                   if (isMe) ...[
                     const SizedBox(width: 8),
-                    CircleAvatar(
+                    _buildUserAvatar(
+                      imageUrl: senderImage,
                       radius: 16,
                       backgroundColor: theme.primaryColor.withOpacity(0.3),
-                      backgroundImage: senderImage.isNotEmpty
-                          ? NetworkImage(senderImage)
-                          : null,
-                      child: senderImage.isEmpty
-                          ? Icon(Icons.person, size: 16, color: theme.primaryColor)
-                          : null,
+                      fallbackIconColor: theme.primaryColor,
                     ),
                   ],
                 ],
@@ -1961,6 +1964,63 @@ class _ConsultationScreenState extends State<ConsultationScreen> {
             ),
           );
         },
+      ),
+    );
+  }
+
+  Widget _buildUserAvatar({
+    required String? imageUrl,
+    required double radius,
+    required Color backgroundColor,
+    required Color fallbackIconColor,
+  }) {
+    return CircleAvatar(
+      radius: radius,
+      backgroundColor: backgroundColor,
+      child: ClipOval(
+        child: _buildAvatarImage(
+          imageUrl: imageUrl,
+          size: radius * 2,
+          fallbackIconColor: fallbackIconColor,
+        ),
+      ),
+    );
+  }
+
+  Widget _buildAvatarImage({
+    required String? imageUrl,
+    required double size,
+    Color fallbackIconColor = Colors.blue,
+  }) {
+    if (imageUrl == null || imageUrl.isEmpty || _cloudStorageBlocked) {
+      return _buildAvatarFallback(size: size, iconColor: fallbackIconColor);
+    }
+
+    return Image.network(
+      imageUrl,
+      width: size,
+      height: size,
+      fit: BoxFit.cover,
+      errorBuilder: (_, __, ___) => _buildAvatarFallback(
+        size: size,
+        iconColor: fallbackIconColor,
+      ),
+    );
+  }
+
+  Widget _buildAvatarFallback({
+    required double size,
+    required Color iconColor,
+  }) {
+    return Container(
+      width: size,
+      height: size,
+      color: Colors.transparent,
+      alignment: Alignment.center,
+      child: Icon(
+        Icons.person,
+        size: size * 0.55,
+        color: iconColor,
       ),
     );
   }
@@ -1981,12 +2041,11 @@ class _ConsultationScreenState extends State<ConsultationScreen> {
           children: [
             Hero(
               tag: 'user-${widget.isDoctor ? widget.patientUid : widget.doctorUid}',
-              child: CircleAvatar(
+              child: _buildUserAvatar(
+                imageUrl: userImageUrl,
                 radius: 20,
                 backgroundColor: theme.primaryColor.withOpacity(0.2),
-                backgroundImage: (userImageUrl != null && userImageUrl.isNotEmpty)
-                    ? NetworkImage(userImageUrl)
-                    : const AssetImage('assets/images/doctor_placeholder.png') as ImageProvider,
+                fallbackIconColor: theme.primaryColor,
               ),
             ),
             const SizedBox(width: 12),
@@ -2396,9 +2455,14 @@ class _ConsultationScreenState extends State<ConsultationScreen> {
           children: [
             CircleAvatar(
               radius: 40,
-              backgroundImage: userImageUrl != null
-                  ? NetworkImage(userImageUrl)
-                  : const AssetImage('assets/default_profile.png') as ImageProvider,
+              backgroundColor: Colors.blue.withOpacity(0.15),
+              child: ClipOval(
+                child: _buildAvatarImage(
+                  imageUrl: userImageUrl,
+                  size: 80,
+                  fallbackIconColor: Colors.blue,
+                ),
+              ),
             ),
             const SizedBox(height: 16),
             Text(contactName, style: Theme.of(context).textTheme.titleLarge),
