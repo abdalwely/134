@@ -15,6 +15,7 @@ class GroupConsultationScreen extends StatefulWidget {
 }
 
 class _GroupConsultationScreenState extends State<GroupConsultationScreen> {
+  static const bool _preferInlineAttachments = true;
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   final FirebaseAuth _auth = FirebaseAuth.instance;
   final FirebaseStorage _storage = FirebaseStorage.instance;
@@ -26,6 +27,7 @@ class _GroupConsultationScreenState extends State<GroupConsultationScreen> {
   Map<String, dynamic>? _replyToMessage;
 
   List<PlatformFile> _selectedFiles = [];
+  bool _cloudStorageBlocked = false;
 
   @override
   Widget build(BuildContext context) {
@@ -318,51 +320,93 @@ class _GroupConsultationScreenState extends State<GroupConsultationScreen> {
 
     setState(() => _isSending = true);
 
-    final userData = await _firestore.collection("users").doc(user.uid).get();
-    final fullName = userData.data()?['fullName'] ?? 'مستخدم';
-    final photoURL = userData.data()?['photoURL'];
+    try {
+      final userData = await _firestore.collection("users").doc(user.uid).get();
+      final fullName = userData.data()?['fullName'] ?? 'مستخدم';
+      final photoURL = userData.data()?['photoURL'];
 
-    List<Map<String, String>> files = [];
+      final List<Map<String, String>> files = [];
 
-    for (final file in _selectedFiles) {
-      final isImage = file.extension?.toLowerCase() == 'jpg' || file.extension?.toLowerCase() == 'png';
-      try {
-        final ref =
-            _storage.ref().child('group_files/${DateTime.now().millisecondsSinceEpoch}_${file.name}');
-        await ref.putData(file.bytes!);
-        final url = await ref.getDownloadURL();
-        files.add({
-          'fileUrl': url,
-          'fileType': isImage ? 'image' : 'file',
-          'fileName': file.name,
-        });
-      } catch (_) {
-        files.add({
-          'fileType': isImage ? 'image_inline' : 'file_inline',
-          'fileBase64': base64Encode(file.bytes!),
-          'fileName': file.name,
-        });
+      for (final file in _selectedFiles) {
+        final uploadedFile = await _uploadGroupFileWithFallback(file);
+        files.add(uploadedFile);
+      }
+
+      final msg = {
+        'text': _messageController.text.trim(),
+        'senderId': user.uid,
+        'senderName': fullName,
+        'senderImage': photoURL,
+        'timestamp': FieldValue.serverTimestamp(),
+        'files': files,
+        'replyTo': _replyToMessage,
+      };
+
+      await _firestore.collection("group_consultations").add(msg);
+
+      _messageController.clear();
+      setState(() {
+        _replyToMessage = null;
+        _selectedFiles.clear();
+      });
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('فشل إرسال الرسالة: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isSending = false);
       }
     }
+  }
 
-    final msg = {
-      'text': _messageController.text.trim(),
-      'senderId': user.uid,
-      'senderName': fullName,
-      'senderImage': photoURL,
-      'timestamp': FieldValue.serverTimestamp(),
-      'files': files,
-      'replyTo': _replyToMessage,
-    };
+  Future<Map<String, String>> _uploadGroupFileWithFallback(PlatformFile file) async {
+    final ext = (file.extension ?? '').toLowerCase();
+    final isImage = ext == 'jpg' || ext == 'jpeg' || ext == 'png' || ext == 'webp';
 
-    await _firestore.collection("group_consultations").add(msg);
+    if (file.bytes == null) {
+      throw Exception('الملف ${file.name} لا يحتوي بيانات');
+    }
 
-    _messageController.clear();
-    setState(() {
-      _replyToMessage = null;
-      _selectedFiles.clear();
-      _isSending = false;
-    });
+    if (_preferInlineAttachments || _cloudStorageBlocked) {
+      return {
+        'fileType': isImage ? 'image_inline' : 'file_inline',
+        'fileBase64': base64Encode(file.bytes!),
+        'fileName': file.name,
+      };
+    }
+
+    try {
+      final ref = _storage.ref().child(
+        'group_files/${DateTime.now().millisecondsSinceEpoch}_${file.name}',
+      );
+      await ref.putData(file.bytes!);
+      final url = await ref.getDownloadURL();
+      return {
+        'fileUrl': url,
+        'fileType': isImage ? 'image' : 'file',
+        'fileName': file.name,
+      };
+    } catch (e) {
+      final msg = e.toString().toLowerCase();
+      if (msg.contains('code\": 402') ||
+          msg.contains('httpresult: 402') ||
+          msg.contains('-13000') ||
+          msg.contains('spark pricing plan') ||
+          msg.contains('no longer supports')) {
+        _cloudStorageBlocked = true;
+      }
+      return {
+        'fileType': isImage ? 'image_inline' : 'file_inline',
+        'fileBase64': base64Encode(file.bytes!),
+        'fileName': file.name,
+      };
+    }
   }
 
   Future<void> _pickFiles() async {
