@@ -11,6 +11,7 @@ import 'package:zego_uikit_prebuilt_call/zego_uikit_prebuilt_call.dart';
 import 'package:record/record.dart';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:http/http.dart' as http;
+import 'package:permission_handler/permission_handler.dart';
 import 'dart:convert';
 import 'dart:io';
 import '../../../../core/config/medical_theme.dart';
@@ -85,6 +86,7 @@ class _ConsultationScreenState extends State<ConsultationScreen> {
   Duration _audioDuration = Duration.zero;
   Duration _audioPosition = Duration.zero;
   final Map<String, String> _inlineAudioFiles = {};
+  bool _cloudStorageBlocked = false;
 
   @override
   void initState() {
@@ -447,10 +449,12 @@ class _ConsultationScreenState extends State<ConsultationScreen> {
     try {
       if (selectedMedia != null && mediaType != null) {
         type = mediaType!;
-        downloadUrl = await _uploadFile();
+        downloadUrl = _cloudStorageBlocked ? null : await _uploadFile();
 
-        final shouldUseInlineFallback =
-            downloadUrl == null || _isStoragePlanRestricted(_lastUploadError!);
+        final shouldUseInlineFallback = _cloudStorageBlocked ||
+            downloadUrl == null ||
+            (_lastUploadError != null &&
+                _isStoragePlanRestricted(_lastUploadError!));
 
         if (type == 'audio' && shouldUseInlineFallback) {
           inlineAudioBase64 = await _encodeInlineAudio(selectedMedia!);
@@ -517,6 +521,12 @@ class _ConsultationScreenState extends State<ConsultationScreen> {
 
   Future<void> _startRecording() async {
     try {
+      final micGranted = await _requestMicrophonePermission();
+      if (!micGranted) {
+        _showErrorSnackbar('يلزم إذن الميكروفون لتسجيل الرسائل الصوتية');
+        return;
+      }
+
       if (await _audioRecorder.hasPermission()) {
         final path = '${Directory.systemTemp.path}/voice_${DateTime.now().millisecondsSinceEpoch}.m4a';
         await _audioRecorder.start(
@@ -535,7 +545,8 @@ class _ConsultationScreenState extends State<ConsultationScreen> {
       } else {
         _showErrorSnackbar('يلزم إذن الميكروفون لتسجيل الرسائل الصوتية');
       }
-    } catch (_) {
+    } catch (e) {
+      _logError('تعذر بدء التسجيل الصوتي: $e');
       _showErrorSnackbar('تعذر بدء التسجيل الصوتي');
     }
   }
@@ -557,7 +568,8 @@ class _ConsultationScreenState extends State<ConsultationScreen> {
         fileName = 'voice_${DateTime.now().millisecondsSinceEpoch}.m4a';
       });
       await _sendMessage();
-    } catch (_) {
+    } catch (e) {
+      _logError('تعذر إرسال التسجيل الصوتي: $e');
       if (mounted) setState(() => _isRecording = false);
       _showErrorSnackbar('تعذر إرسال التسجيل الصوتي');
     }
@@ -675,6 +687,8 @@ class _ConsultationScreenState extends State<ConsultationScreen> {
     return path;
   }
   Future<String?> _uploadFile() async {
+    if (_cloudStorageBlocked) return null;
+
     setState(() {
       _isUploading = true;
       _uploadProgress = 0.0;
@@ -682,11 +696,21 @@ class _ConsultationScreenState extends State<ConsultationScreen> {
     _lastUploadError = null;
 
     try {
+      if (selectedMedia == null || !await selectedMedia!.exists()) {
+        throw Exception('selected_media_not_found');
+      }
+
+      final extension = selectedMedia!.path.split('.').last.toLowerCase();
+      final contentType = _resolveContentType(mediaType, extension);
       final ref = FirebaseStorage.instance.ref(
         'consultations/${widget.consultationId}/files/${DateTime.now().millisecondsSinceEpoch}_$fileName',
       );
 
-      final uploadTask = ref.putFile(selectedMedia!);
+      final uploadTask = ref.putFile(
+        selectedMedia!,
+        SettableMetadata(contentType: contentType),
+      );
+
       await uploadTask;
       final downloadUrl = await ref.getDownloadURL();
 
@@ -700,6 +724,10 @@ class _ConsultationScreenState extends State<ConsultationScreen> {
       return downloadUrl;
     } catch (e) {
       _lastUploadError = e;
+      if (_isStoragePlanRestricted(e)) {
+        _cloudStorageBlocked = true;
+      }
+      _logError('فشل رفع الملف: $e');
       if (mounted) {
         setState(() {
           _isUploading = false;
@@ -982,6 +1010,12 @@ class _ConsultationScreenState extends State<ConsultationScreen> {
 
   Future<void> _pickMedia(String type) async {
     try {
+      final hasPermission = await _ensureMediaPermission(type);
+      if (!hasPermission) {
+        _showErrorSnackbar('تم رفض صلاحية الوصول للوسائط');
+        return;
+      }
+
       if (type == 'image') {
         final picked = await picker.pickImage(source: ImageSource.gallery);
         if (picked != null) {
@@ -1020,7 +1054,50 @@ class _ConsultationScreenState extends State<ConsultationScreen> {
         }
       }
     } catch (e) {
+      _logError('فشل اختيار الملف: $e');
       _showErrorSnackbar('فشل في اختيار الملف');
+    }
+  }
+
+  Future<bool> _requestMicrophonePermission() async {
+    var status = await Permission.microphone.status;
+    if (status.isGranted) return true;
+
+    status = await Permission.microphone.request();
+    return status.isGranted;
+  }
+
+  Future<bool> _ensureMediaPermission(String type) async {
+    if (!Platform.isAndroid && !Platform.isIOS) return true;
+
+    if (type == 'camera') {
+      final camera = await Permission.camera.request();
+      return camera.isGranted;
+    }
+
+    if (Platform.isAndroid) {
+      // ImagePicker/Photo Picker على أندرويد غالباً يدير صلاحية المعرض بنفسه.
+      // لا نمنع المستخدم مسبقاً إلا في الكاميرا.
+      return true;
+    }
+
+    if (Platform.isIOS) {
+      final photos = await Permission.photos.request();
+      return photos.isGranted || photos.isLimited;
+    }
+    return true;
+  }
+
+  String _resolveContentType(String? type, String extension) {
+    switch (type) {
+      case 'image':
+        return 'image/$extension';
+      case 'video':
+        return 'video/$extension';
+      case 'audio':
+        return extension == 'aac' ? 'audio/aac' : 'audio/mp4';
+      default:
+        return 'application/octet-stream';
     }
   }
 
@@ -1773,15 +1850,11 @@ class _ConsultationScreenState extends State<ConsultationScreen> {
                 children: [
                   // ========== صورة المستخدم (اليسار للرسائل الواردة) ==========
                   if (!isMe) ...[
-                    CircleAvatar(
+                    _buildUserAvatar(
+                      imageUrl: senderImage,
                       radius: 16,
                       backgroundColor: theme.primaryColor.withOpacity(0.3),
-                      backgroundImage: senderImage.isNotEmpty
-                          ? NetworkImage(senderImage)
-                          : null,
-                      child: senderImage.isEmpty
-                          ? Icon(Icons.person, size: 16, color: theme.primaryColor)
-                          : null,
+                      fallbackIconColor: theme.primaryColor,
                     ),
                     const SizedBox(width: 8),
                   ],
@@ -1866,15 +1939,11 @@ class _ConsultationScreenState extends State<ConsultationScreen> {
                   // ========== صورة المستخدم (اليمين للرسائل المرسلة) ==========
                   if (isMe) ...[
                     const SizedBox(width: 8),
-                    CircleAvatar(
+                    _buildUserAvatar(
+                      imageUrl: senderImage,
                       radius: 16,
                       backgroundColor: theme.primaryColor.withOpacity(0.3),
-                      backgroundImage: senderImage.isNotEmpty
-                          ? NetworkImage(senderImage)
-                          : null,
-                      child: senderImage.isEmpty
-                          ? Icon(Icons.person, size: 16, color: theme.primaryColor)
-                          : null,
+                      fallbackIconColor: theme.primaryColor,
                     ),
                   ],
                 ],
@@ -1882,6 +1951,63 @@ class _ConsultationScreenState extends State<ConsultationScreen> {
             ),
           );
         },
+      ),
+    );
+  }
+
+  Widget _buildUserAvatar({
+    required String? imageUrl,
+    required double radius,
+    required Color backgroundColor,
+    required Color fallbackIconColor,
+  }) {
+    return CircleAvatar(
+      radius: radius,
+      backgroundColor: backgroundColor,
+      child: ClipOval(
+        child: _buildAvatarImage(
+          imageUrl: imageUrl,
+          size: radius * 2,
+          fallbackIconColor: fallbackIconColor,
+        ),
+      ),
+    );
+  }
+
+  Widget _buildAvatarImage({
+    required String? imageUrl,
+    required double size,
+    Color fallbackIconColor = Colors.blue,
+  }) {
+    if (imageUrl == null || imageUrl.isEmpty || _cloudStorageBlocked) {
+      return _buildAvatarFallback(size: size, iconColor: fallbackIconColor);
+    }
+
+    return Image.network(
+      imageUrl,
+      width: size,
+      height: size,
+      fit: BoxFit.cover,
+      errorBuilder: (_, __, ___) => _buildAvatarFallback(
+        size: size,
+        iconColor: fallbackIconColor,
+      ),
+    );
+  }
+
+  Widget _buildAvatarFallback({
+    required double size,
+    required Color iconColor,
+  }) {
+    return Container(
+      width: size,
+      height: size,
+      color: Colors.transparent,
+      alignment: Alignment.center,
+      child: Icon(
+        Icons.person,
+        size: size * 0.55,
+        color: iconColor,
       ),
     );
   }
@@ -1902,12 +2028,11 @@ class _ConsultationScreenState extends State<ConsultationScreen> {
           children: [
             Hero(
               tag: 'user-${widget.isDoctor ? widget.patientUid : widget.doctorUid}',
-              child: CircleAvatar(
+              child: _buildUserAvatar(
+                imageUrl: userImageUrl,
                 radius: 20,
                 backgroundColor: theme.primaryColor.withOpacity(0.2),
-                backgroundImage: (userImageUrl != null && userImageUrl.isNotEmpty)
-                    ? NetworkImage(userImageUrl)
-                    : const AssetImage('assets/images/doctor_placeholder.png') as ImageProvider,
+                fallbackIconColor: theme.primaryColor,
               ),
             ),
             const SizedBox(width: 12),
@@ -2317,9 +2442,14 @@ class _ConsultationScreenState extends State<ConsultationScreen> {
           children: [
             CircleAvatar(
               radius: 40,
-              backgroundImage: userImageUrl != null
-                  ? NetworkImage(userImageUrl)
-                  : const AssetImage('assets/default_profile.png') as ImageProvider,
+              backgroundColor: Colors.blue.withOpacity(0.15),
+              child: ClipOval(
+                child: _buildAvatarImage(
+                  imageUrl: userImageUrl,
+                  size: 80,
+                  fallbackIconColor: Colors.blue,
+                ),
+              ),
             ),
             const SizedBox(height: 16),
             Text(contactName, style: Theme.of(context).textTheme.titleLarge),
