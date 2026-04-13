@@ -7,6 +7,7 @@ import 'package:digl/core/config/theme_helper.dart';
 import 'package:digl/services/user_role_service.dart';
 import 'package:digl/services/logout_service.dart';
 import 'package:digl/features/settings/presentation/pages/health_assessment_screen.dart';
+import 'package:digl/features/medical_profile/presentation/pages/ai_symptom_questions_screen.dart';
 import 'package:provider/provider.dart';
 
 /// ⚙️ صفحة الإعدادات المحترفة
@@ -409,6 +410,20 @@ class _SettingsScreenState extends State<SettingsScreen>
                 Navigator.of(context).push(
                   MaterialPageRoute(
                     builder: (context) => const HealthAssessmentScreen(),
+                  ),
+                );
+              },
+            ),
+            const Divider(),
+            ListTile(
+              leading: const Icon(Icons.psychology_alt_rounded),
+              title: const Text('اسأل الذكاء الاصطناعي'),
+              subtitle: const Text('فتح أسئلة الذكاء الاصطناعي يدويًا عند الحاجة'),
+              trailing: const Icon(Icons.arrow_forward_ios, size: 16),
+              onTap: () {
+                Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (context) => const AiSymptomQuestionsScreen(),
                   ),
                 );
               },
