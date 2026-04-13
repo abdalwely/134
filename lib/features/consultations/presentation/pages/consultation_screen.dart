@@ -47,6 +47,7 @@ class ConsultationScreen extends StatefulWidget {
 class _ConsultationScreenState extends State<ConsultationScreen> {
   // ✅ Logging Tag
   static const String _logTag = '💬 [Consultation Screen]';
+  static const bool _preferInlineAttachments = true;
 
   // Controllers
   final TextEditingController _messageController = TextEditingController();
@@ -449,9 +450,11 @@ class _ConsultationScreenState extends State<ConsultationScreen> {
     try {
       if (selectedMedia != null && mediaType != null) {
         type = mediaType!;
-        downloadUrl = _cloudStorageBlocked ? null : await _uploadFile();
+        final skipCloudUpload = _preferInlineAttachments || _cloudStorageBlocked;
+        downloadUrl = skipCloudUpload ? null : await _uploadFile();
 
-        final shouldUseInlineFallback = _cloudStorageBlocked ||
+        final shouldUseInlineFallback = _preferInlineAttachments ||
+            _cloudStorageBlocked ||
             downloadUrl == null ||
             (_lastUploadError != null &&
                 _isStoragePlanRestricted(_lastUploadError!));
