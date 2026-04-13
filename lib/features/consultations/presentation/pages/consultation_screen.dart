@@ -11,6 +11,7 @@ import 'package:zego_uikit_prebuilt_call/zego_uikit_prebuilt_call.dart';
 import 'package:record/record.dart';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:http/http.dart' as http;
+import 'package:permission_handler/permission_handler.dart';
 import 'dart:convert';
 import 'dart:io';
 import '../../../../core/config/medical_theme.dart';
@@ -449,8 +450,9 @@ class _ConsultationScreenState extends State<ConsultationScreen> {
         type = mediaType!;
         downloadUrl = await _uploadFile();
 
-        final shouldUseInlineFallback =
-            downloadUrl == null || _isStoragePlanRestricted(_lastUploadError!);
+        final shouldUseInlineFallback = downloadUrl == null ||
+            (_lastUploadError != null &&
+                _isStoragePlanRestricted(_lastUploadError!));
 
         if (type == 'audio' && shouldUseInlineFallback) {
           inlineAudioBase64 = await _encodeInlineAudio(selectedMedia!);
@@ -517,6 +519,12 @@ class _ConsultationScreenState extends State<ConsultationScreen> {
 
   Future<void> _startRecording() async {
     try {
+      final micGranted = await _requestMicrophonePermission();
+      if (!micGranted) {
+        _showErrorSnackbar('يلزم إذن الميكروفون لتسجيل الرسائل الصوتية');
+        return;
+      }
+
       if (await _audioRecorder.hasPermission()) {
         final path = '${Directory.systemTemp.path}/voice_${DateTime.now().millisecondsSinceEpoch}.m4a';
         await _audioRecorder.start(
@@ -535,7 +543,8 @@ class _ConsultationScreenState extends State<ConsultationScreen> {
       } else {
         _showErrorSnackbar('يلزم إذن الميكروفون لتسجيل الرسائل الصوتية');
       }
-    } catch (_) {
+    } catch (e) {
+      _logError('تعذر بدء التسجيل الصوتي: $e');
       _showErrorSnackbar('تعذر بدء التسجيل الصوتي');
     }
   }
@@ -557,7 +566,8 @@ class _ConsultationScreenState extends State<ConsultationScreen> {
         fileName = 'voice_${DateTime.now().millisecondsSinceEpoch}.m4a';
       });
       await _sendMessage();
-    } catch (_) {
+    } catch (e) {
+      _logError('تعذر إرسال التسجيل الصوتي: $e');
       if (mounted) setState(() => _isRecording = false);
       _showErrorSnackbar('تعذر إرسال التسجيل الصوتي');
     }
@@ -682,11 +692,30 @@ class _ConsultationScreenState extends State<ConsultationScreen> {
     _lastUploadError = null;
 
     try {
+      if (selectedMedia == null || !await selectedMedia!.exists()) {
+        throw Exception('selected_media_not_found');
+      }
+
+      final extension = selectedMedia!.path.split('.').last.toLowerCase();
+      final contentType = _resolveContentType(mediaType, extension);
       final ref = FirebaseStorage.instance.ref(
         'consultations/${widget.consultationId}/files/${DateTime.now().millisecondsSinceEpoch}_$fileName',
       );
 
-      final uploadTask = ref.putFile(selectedMedia!);
+      final uploadTask = ref.putFile(
+        selectedMedia!,
+        SettableMetadata(contentType: contentType),
+      );
+
+      uploadTask.snapshotEvents.listen((snapshot) {
+        if (!mounted) return;
+        final total = snapshot.totalBytes;
+        if (total <= 0) return;
+        setState(() {
+          _uploadProgress = snapshot.bytesTransferred / total;
+        });
+      });
+
       await uploadTask;
       final downloadUrl = await ref.getDownloadURL();
 
@@ -700,6 +729,7 @@ class _ConsultationScreenState extends State<ConsultationScreen> {
       return downloadUrl;
     } catch (e) {
       _lastUploadError = e;
+      _logError('فشل رفع الملف: $e');
       if (mounted) {
         setState(() {
           _isUploading = false;
@@ -982,6 +1012,12 @@ class _ConsultationScreenState extends State<ConsultationScreen> {
 
   Future<void> _pickMedia(String type) async {
     try {
+      final hasPermission = await _ensureMediaPermission(type);
+      if (!hasPermission) {
+        _showErrorSnackbar('تم رفض صلاحية الوصول للوسائط');
+        return;
+      }
+
       if (type == 'image') {
         final picked = await picker.pickImage(source: ImageSource.gallery);
         if (picked != null) {
@@ -1020,7 +1056,50 @@ class _ConsultationScreenState extends State<ConsultationScreen> {
         }
       }
     } catch (e) {
+      _logError('فشل اختيار الملف: $e');
       _showErrorSnackbar('فشل في اختيار الملف');
+    }
+  }
+
+  Future<bool> _requestMicrophonePermission() async {
+    var status = await Permission.microphone.status;
+    if (status.isGranted) return true;
+
+    status = await Permission.microphone.request();
+    return status.isGranted;
+  }
+
+  Future<bool> _ensureMediaPermission(String type) async {
+    if (!Platform.isAndroid && !Platform.isIOS) return true;
+
+    if (type == 'camera') {
+      final camera = await Permission.camera.request();
+      return camera.isGranted;
+    }
+
+    if (Platform.isIOS) {
+      final photos = await Permission.photos.request();
+      return photos.isGranted || photos.isLimited;
+    }
+
+    // Android
+    final photos = await Permission.photos.request();
+    if (photos.isGranted) return true;
+
+    final storage = await Permission.storage.request();
+    return storage.isGranted;
+  }
+
+  String _resolveContentType(String? type, String extension) {
+    switch (type) {
+      case 'image':
+        return 'image/$extension';
+      case 'video':
+        return 'video/$extension';
+      case 'audio':
+        return extension == 'aac' ? 'audio/aac' : 'audio/mp4';
+      default:
+        return 'application/octet-stream';
     }
   }
 
