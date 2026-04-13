@@ -1746,6 +1746,31 @@ class _ConsultationScreenState extends State<ConsultationScreen> {
         );
       }
 
+      if (contentWidgets.isEmpty) {
+        contentWidgets.add(
+          Container(
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+              color: isDarkMode ? Colors.grey[800] : Colors.grey[200],
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.attach_file),
+                const SizedBox(width: 8),
+                Flexible(
+                  child: Text(
+                    fileName.isNotEmpty ? fileName : 'مرفق',
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      }
+
       content = Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: contentWidgets,
