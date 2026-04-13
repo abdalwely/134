@@ -103,12 +103,9 @@ import 'package:digl/Provider/underReviewScreen.dart';
 import 'package:digl/features/auth/presentation/pages/login_screen.dart';
 import 'package:digl/features/home/presentation/pages/home_screen.dart';
 import 'package:digl/features/medical_profile/presentation/pages/health_questions_screen.dart';
-import 'package:digl/features/medical_profile/presentation/pages/ai_symptom_questions_screen.dart';
 import 'package:digl/features/medical_profile/services/medical_profile_service.dart';
-import 'package:digl/features/medical_profile/services/patient_symptoms_service.dart';
 import 'package:digl/services/zego_call_service.dart';
 import 'package:digl/services/zego_incoming_call_handler.dart';
-import 'package:digl/services/ai_questions_service.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:zego_uikit_prebuilt_call/zego_uikit_prebuilt_call.dart';
@@ -304,47 +301,23 @@ class _AuthGateState extends State<AuthGate> {
               return const HomeScreen();
             }
 
-            // للمريض: التحقق من الأعراض الأولية والملف الصحي
+            // للمريض: التحقق من وجود الملف الصحي فقط
+            // ملاحظة: أسئلة الذكاء الاصطناعي أصبحت متاحة يدويًا من شاشة الإعدادات.
             if (accountType == 'patient') {
-              // ✅ التحقق من ما إذا كان يجب عرض أسئلة الذكاء الاصطناعي
-              // الخدمة تتحقق من:
-              // 1. إذا لم يكملها بعد (ai_test_completed = false)
-              // 2. إذا مضى 10 أيام منذ آخر ظهور
               return FutureBuilder<bool>(
-                future: AiQuestionsService.shouldShowAiQuestions(),
-                builder: (context, aiQuestionSnapshot) {
-                  if (aiQuestionSnapshot.connectionState == ConnectionState.waiting) {
+                future: MedicalProfileService.hasHealthProfile(),
+                builder: (context, profileSnapshot) {
+                  if (profileSnapshot.connectionState == ConnectionState.waiting) {
                     return _buildLoadingScreen();
                   }
-
-                  if (aiQuestionSnapshot.hasError) {
-                    return _buildErrorScreen('حدث خطأ أثناء التحقق من أسئلة الذكاء الاصطناعي.');
+                  if (profileSnapshot.hasError) {
+                    return _buildErrorScreen('حدث خطأ أثناء التحقق من الملف الصحي.');
                   }
-
-                  final shouldShowAiQuestions = aiQuestionSnapshot.data ?? false;
-
-                  if (shouldShowAiQuestions) {
-                    // إذا كان يجب عرض أسئلة الذكاء الاصطناعي، اعرضها
-                    return const AiSymptomQuestionsScreen();
+                  final hasProfile = profileSnapshot.data ?? false;
+                  if (!hasProfile) {
+                    return const HealthQuestionsScreen();
                   }
-
-                  // إذا لم نحتج لعرض الأسئلة، تحقق من الملف الصحي
-                  return FutureBuilder<bool>(
-                    future: MedicalProfileService.hasHealthProfile(),
-                    builder: (context, profileSnapshot) {
-                      if (profileSnapshot.connectionState == ConnectionState.waiting) {
-                        return _buildLoadingScreen();
-                      }
-                      if (profileSnapshot.hasError) {
-                        return _buildErrorScreen('حدث خطأ أثناء التحقق من الملف الصحي.');
-                      }
-                      final hasProfile = profileSnapshot.data ?? false;
-                      if (!hasProfile) {
-                        return const HealthQuestionsScreen();
-                      }
-                      return const HomeScreen();
-                    },
-                  );
+                  return const HomeScreen();
                 },
               );
             }
