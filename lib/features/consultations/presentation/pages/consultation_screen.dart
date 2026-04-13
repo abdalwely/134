@@ -687,6 +687,8 @@ class _ConsultationScreenState extends State<ConsultationScreen> {
     return path;
   }
   Future<String?> _uploadFile() async {
+    if (_cloudStorageBlocked) return null;
+
     setState(() {
       _isUploading = true;
       _uploadProgress = 0.0;
@@ -707,21 +709,6 @@ class _ConsultationScreenState extends State<ConsultationScreen> {
       final uploadTask = ref.putFile(
         selectedMedia!,
         SettableMetadata(contentType: contentType),
-      );
-
-      uploadTask.snapshotEvents.listen(
-        (snapshot) {
-          if (!mounted) return;
-          final total = snapshot.totalBytes;
-          if (total <= 0) return;
-          setState(() {
-            _uploadProgress = snapshot.bytesTransferred / total;
-          });
-        },
-        onError: (Object error) {
-          _lastUploadError = error;
-          _logError('خطأ أثناء متابعة تقدم الرفع: $error');
-        },
       );
 
       await uploadTask;
@@ -1088,17 +1075,17 @@ class _ConsultationScreenState extends State<ConsultationScreen> {
       return camera.isGranted;
     }
 
+    if (Platform.isAndroid) {
+      // ImagePicker/Photo Picker على أندرويد غالباً يدير صلاحية المعرض بنفسه.
+      // لا نمنع المستخدم مسبقاً إلا في الكاميرا.
+      return true;
+    }
+
     if (Platform.isIOS) {
       final photos = await Permission.photos.request();
       return photos.isGranted || photos.isLimited;
     }
-
-    // Android
-    final photos = await Permission.photos.request();
-    if (photos.isGranted) return true;
-
-    final storage = await Permission.storage.request();
-    return storage.isGranted;
+    return true;
   }
 
   String _resolveContentType(String? type, String extension) {
